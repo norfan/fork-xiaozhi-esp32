@@ -1,6 +1,5 @@
 #include "wifi_board.h"
 #include "codecs/no_audio_codec.h"
-#include "display/lcd_display.h"
 #include "system_reset.h"
 #include "application.h"
 #include "button.h"
@@ -8,6 +7,14 @@
 #include "mcp_server.h"
 #include "lamp_controller.h"
 #include "led/single_led.h"
+#include "motor_controller.h"
+#include "ble/mijin_ble.h"
+#include "audio/ble_audio_player.h"
+#if defined(CONFIG_BOARD_ENABLE_NIMBO_EMOTION)
+#include "nimbo_display.h"
+#else
+#include "display/lcd_display.h"
+#endif
 
 #include <esp_log.h>
 #include <driver/i2c_master.h>
@@ -63,7 +70,9 @@ class CompactWifiBoardLCD : public WifiBoard {
 private:
  
     Button boot_button_;
-    LcdDisplay* display_;
+    Display* display_;
+    mijin::MotorController motor_;
+    mijin::BleAudioPlayer* ble_audio_ = nullptr;
 
     void InitializeSpi() {
         spi_bus_config_t buscfg = {};
@@ -118,8 +127,15 @@ private:
 #ifdef  LCD_TYPE_GC9A01_SERIAL
         panel_config.vendor_config = &gc9107_vendor_config;
 #endif
-        display_ = new SpiLcdDisplay(panel_io, panel,
+#if defined(CONFIG_BOARD_ENABLE_NIMBO_EMOTION)
+        display_ = new NimboDisplay(panel_io, panel,
                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+#else
+        // LcdDisplay 构造为 protected（仅子类可用），改用其 SPI 子类 SpiLcdDisplay（public 构造，
+        // 与 NimboDisplay 同基类同参数）→ 标准 xiaozhi UI + 默认 emoji 表情
+        display_ = new SpiLcdDisplay(panel_io, panel,
+                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+#endif
     }
 
     void InitializeButtons() {
@@ -138,6 +154,96 @@ private:
         static LampController lamp(LAMP_GPIO);
     }
 
+    /* ==================== mijin 离线通道（BLE） ==================== */
+
+    void OnBleCommand(const uint8_t* data, size_t len) {
+        if (len < 1) {
+            return;
+        }
+        uint8_t cmd = data[0];
+        int arg = (len >= 2) ? data[1] : 0;
+
+        /* 移动指令 0x01~0x09 */
+        if (cmd >= 0x01 && cmd <= 0x09) {
+            motor_.Execute(cmd, arg);
+            return;
+        }
+
+        auto* display = GetDisplay();
+        switch (cmd) {
+        case 0x10: {  // 表情 +1B 表情ID（云宝 NIMBO_EMOTION_* / xiaozhi 默认表情名）
+#if defined(CONFIG_BOARD_ENABLE_NIMBO_EMOTION)
+            static const char* kEmotionNames[] = {"idle",    "happy", "thinking", "listening",
+                                                   "speaking", "sleeping", "angry",  "surprised"};
+#else
+            static const char* kEmotionNames[] = {"neutral",  "happy", "thinking", "listening",
+                                                   "speaking", "sleepy", "angry",   "surprised"};
+#endif
+            if (display && arg >= 0 && arg < 8) {
+                display->SetEmotion(kEmotionNames[arg]);
+            }
+            break;
+        }
+        case 0x11:  // 音频会话开始
+            if (ble_audio_) {
+                ble_audio_->StartSession();
+            }
+            break;
+        case 0x12:  // 音频会话结束
+            if (ble_audio_) {
+                ble_audio_->StopSession();
+            }
+            break;
+        case 0x13:  // 查询状态
+            NotifyBleStatus();
+            break;
+        case 0x14:  // 设置速度 0~100
+            motor_.SetSpeedLevel(arg);
+            break;
+        case 0x15:  // 查询版本（握手通道也可读）
+            break;
+        default:
+            ESP_LOGW(TAG, "unknown ble cmd 0x%02x", cmd);
+        }
+    }
+
+    void NotifyBleStatus() {
+        int level = -1;
+        bool charging = false;
+        bool discharging = false;
+        GetBatteryLevel(level, charging, discharging);
+        char buf[128];
+        snprintf(buf, sizeof(buf), "{\"t\":\"status\",\"batt\":%d,\"ble\":true}", level);
+        mijin::MijinBle::GetInstance().Notify(buf);
+    }
+
+    void OnBleConnState(bool connected) {
+        ESP_LOGI(TAG, "BLE %s", connected ? "connected" : "disconnected");
+        if (connected) {
+            NotifyBleStatus();
+        } else {
+            // 断开时清理音频会话：关闭功放输出，防止会话悬挂/持续耗电
+            if (ble_audio_) {
+                ble_audio_->StopSession();
+            }
+        }
+    }
+
+    void InitializeBle() {
+        /* 音频播放器复用 board 的 codec（I2S 功放） */
+        ble_audio_ = new mijin::BleAudioPlayer(GetAudioCodec());
+
+        mijin::BleCallbacks cbs;
+        cbs.on_command = [this](const uint8_t* d, size_t n) { OnBleCommand(d, n); };
+        cbs.on_audio = [this](const uint8_t* d, size_t n) {
+            if (ble_audio_) {
+                ble_audio_->WritePcm(d, n);
+            }
+        };
+        cbs.on_conn_state = [this](bool c) { OnBleConnState(c); };
+        mijin::MijinBle::GetInstance().Init(cbs);
+    }
+
 public:
     CompactWifiBoardLCD() :
         boot_button_(BOOT_BUTTON_GPIO) {
@@ -145,10 +251,16 @@ public:
         InitializeLcdDisplay();
         InitializeButtons();
         InitializeTools();
+        InitializeBle();
         if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
             GetBacklight()->RestoreBrightness();
         }
         
+    }
+
+    ~CompactWifiBoardLCD() {
+        delete ble_audio_;
+        ble_audio_ = nullptr;
     }
 
     virtual Led* GetLed() override {

@@ -2,6 +2,10 @@
 # CMakeLists in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.16)
 
+# Windows: BLE-enabled builds exceed the single command-line limit (32k chars).
+# Force Ninja to use response files for compile and link commands.
+set(CMAKE_NINJA_FORCE_RESPONSE_FILE ON)
+
 # Add this line to disable the specific warning
 add_compile_options(-Wno-missing-field-initializers)
 

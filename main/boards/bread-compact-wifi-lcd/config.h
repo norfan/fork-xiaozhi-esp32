@@ -286,4 +286,13 @@
 // A MCP Test: Control a lamp
 #define LAMP_GPIO GPIO_NUM_18
 
+// ==================== mijin robot 电机（TB6612） ====================
+// 占位引脚（硬件到手后按实际接线修改；避开显示/音频已用引脚）
+#define MOTOR_AIN1  GPIO_NUM_1
+#define MOTOR_AIN2  GPIO_NUM_2
+#define MOTOR_PWMA  GPIO_NUM_3
+#define MOTOR_BIN1  GPIO_NUM_8
+#define MOTOR_BIN2  GPIO_NUM_9
+#define MOTOR_PWMB  GPIO_NUM_10
+
 #endif // _BOARD_CONFIG_H_

@@ -779,6 +779,19 @@ choice DISPLAY_LCD_TYPE
         bool "Custom LCD (自定义屏幕参数)"
 endchoice
 
+choice BOARD_NIMBO_EMOTION
+    depends on BOARD_TYPE_BREAD_COMPACT_WIFI_LCD
+    prompt "表情方案（mijin 云宝 / xiaozhi 默认）"
+    default BOARD_ENABLE_NIMBO_EMOTION
+    help
+        云宝：自绘 LVGL 蓬松云朵角色，8 表情 + 顶部时间/电量状态栏；
+        关闭后使用 xiaozhi AI 默认表情（emoji 集合），无时间/电量状态栏。
+    config BOARD_ENABLE_NIMBO_EMOTION
+        bool "云宝表情（8 表情 + 时间/电量）"
+    config BOARD_DISABLE_NIMBO_EMOTION
+        bool "xiaozhi 默认表情"
+endchoice
+
 choice WK_BOARD_TYPE
     depends on BOARD_TYPE_WK_ESP32S3_DEV
     prompt "BOARD_TYPE_WK_ESP32S3_DEV"
