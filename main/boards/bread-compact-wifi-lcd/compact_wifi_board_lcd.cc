@@ -10,13 +10,12 @@
 #include "motor_controller.h"
 #include "ble/mijin_ble.h"
 #include "audio/ble_audio_player.h"
-#if defined(CONFIG_BOARD_ENABLE_NIMBO_EMOTION)
 #include "nimbo_display.h"
-#else
 #include "display/lcd_display.h"
-#endif
 
 #include <esp_log.h>
+#include <nvs_flash.h>
+#include <esp_system.h>
 #include <driver/i2c_master.h>
 #include <esp_lcd_panel_vendor.h>
 #include <esp_lcd_panel_io.h>
@@ -71,6 +70,7 @@ private:
  
     Button boot_button_;
     Display* display_;
+    bool use_nimbo_ = true;  // 运行时表情方案（NVS 决定）
     mijin::MotorController motor_;
     mijin::BleAudioPlayer* ble_audio_ = nullptr;
 
@@ -127,15 +127,29 @@ private:
 #ifdef  LCD_TYPE_GC9A01_SERIAL
         panel_config.vendor_config = &gc9107_vendor_config;
 #endif
-#if defined(CONFIG_BOARD_ENABLE_NIMBO_EMOTION)
-        display_ = new NimboDisplay(panel_io, panel,
-                                    DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
-#else
-        // LcdDisplay 构造为 protected（仅子类可用），改用其 SPI 子类 SpiLcdDisplay（public 构造，
-        // 与 NimboDisplay 同基类同参数）→ 标准 xiaozhi UI + 默认 emoji 表情
-        display_ = new SpiLcdDisplay(panel_io, panel,
-                                     DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
-#endif
+        // 运行时读 NVS 决定表情方案（App 可通过 BLE 0x20 切换，无需重烧）
+        // 默认值：编译期 CONFIG_BOARD_ENABLE_NIMBO_EMOTION
+        bool use_nimbo = true;
+        nvs_handle_t nvs;
+        if (nvs_open("mijin", NVS_READONLY, &nvs) == ESP_OK) {
+            char mode[16] = {0};
+            size_t len = sizeof(mode);
+            if (nvs_get_str(nvs, "emotion_mode", mode, &len) == ESP_OK) {
+                use_nimbo = (strcmp(mode, "default") != 0);
+            } else {
+                use_nimbo = true;  // 未设置时默认云宝
+            }
+            nvs_close(nvs);
+        }
+        use_nimbo_ = use_nimbo;
+        ESP_LOGI(TAG, "emotion_mode = %s", use_nimbo_ ? "nimbo" : "default");
+        if (use_nimbo_) {
+            display_ = new NimboDisplay(panel_io, panel,
+                                        DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        } else {
+            display_ = new SpiLcdDisplay(panel_io, panel,
+                                         DISPLAY_WIDTH, DISPLAY_HEIGHT, DISPLAY_OFFSET_X, DISPLAY_OFFSET_Y, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y, DISPLAY_SWAP_XY);
+        }
     }
 
     void InitializeButtons() {
@@ -171,14 +185,12 @@ private:
 
         auto* display = GetDisplay();
         switch (cmd) {
-        case 0x10: {  // 表情 +1B 表情ID（云宝 NIMBO_EMOTION_* / xiaozhi 默认表情名）
-#if defined(CONFIG_BOARD_ENABLE_NIMBO_EMOTION)
-            static const char* kEmotionNames[] = {"idle",    "happy", "thinking", "listening",
+        case 0x10: {  // 表情 +1B 表情ID
+            static const char* kEmotionNimbo[] = {"idle",    "happy", "thinking", "listening",
                                                    "speaking", "sleeping", "angry",  "surprised"};
-#else
-            static const char* kEmotionNames[] = {"neutral",  "happy", "thinking", "listening",
+            static const char* kEmotionDefault[] = {"neutral",  "happy", "thinking", "listening",
                                                    "speaking", "sleepy", "angry",   "surprised"};
-#endif
+            const char** kEmotionNames = use_nimbo_ ? kEmotionNimbo : kEmotionDefault;
             if (display && arg >= 0 && arg < 8) {
                 display->SetEmotion(kEmotionNames[arg]);
             }
@@ -202,6 +214,19 @@ private:
             break;
         case 0x15:  // 查询版本（握手通道也可读）
             break;
+        case 0x20: {  // 切换表情方案：arg=0 官方默认 / arg=1 云宝
+            const char* mode = (arg == 0) ? "default" : "nimbo";
+            nvs_handle_t nvs;
+            if (nvs_open("mijin", NVS_READWRITE, &nvs) == ESP_OK) {
+                nvs_set_str(nvs, "emotion_mode", mode);
+                nvs_commit(nvs);
+                nvs_close(nvs);
+                ESP_LOGI(TAG, "emotion_mode switched to %s, rebooting...", mode);
+                vTaskDelay(pdMS_TO_TICKS(500));  // 让 BLE notify 发出去
+                esp_restart();
+            }
+            break;
+        }
         default:
             ESP_LOGW(TAG, "unknown ble cmd 0x%02x", cmd);
         }
