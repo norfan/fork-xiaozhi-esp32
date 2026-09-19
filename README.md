@@ -1,172 +1,87 @@
-# An MCP-based Chatbot
+# mijin 智能小车机器人（ESP32-S3 固件）
 
-(English | [中文](README_zh.md) | [日本語](README_ja.md))
+> 基于 [xiaozhi-esp32](https://github.com/78/xiaozhi-esp32) fork 的二次开发版本，目标是做一台**带表情屏、语音对话、手机蓝牙/WiFi 遥控**的四轮智能小车。
 
-## Introduction
+## 项目架构
 
-👉 [Human: Give AI a camera vs AI: Instantly finds out the owner hasn't washed hair for three days【bilibili】](https://www.bilibili.com/video/BV1bpjgzKEhd/)
+```
+┌─────────────────────────────────────────────────┐
+│  Android App（mijin-robot）                     │
+│  ├─ 端侧 LLM（Qwen2.5-1.5B）+ ASR + VITS TTS  │
+│  ├─ 故事大王流式讲故事模式                       │
+│  └─ RobotTransport：BLE / WiFi/TCP 双通道       │
+└──────────────┬──────────────────┬──────────────┘
+               │ BLE Audio         │ WiFi/TCP（PC 模拟器调试用）
+               ▼                  ▼
+┌─────────────────────────────────────────────────┐
+│  ESP32-S3（本仓库）                             │
+│  ├─ bread-compact-wifi-lcd 板级支持             │
+│  ├─ nimbo_display：240×240 LCD 云宝表情屏       │
+│  ├─ motor_controller：TB6612 四轮差速控制        │
+│  ├─ ble_audio_player：BLE 音频接收与播放         │
+│  └─ xiaozhi-esp32 原生联网对话能力              │
+└─────────────────────────────────────────────────┘
+```
 
-👉 [Handcraft your AI girlfriend, beginner's guide【bilibili】](https://www.bilibili.com/video/BV1XnmFYLEJN/)
+## 定制内容（相对于上游 xiaozhi-esp32）
 
-As a voice interaction entry, the XiaoZhi AI chatbot leverages the AI capabilities of large models like Qwen / DeepSeek, and achieves multi-terminal control via the MCP protocol.
+### 板级：bread-compact-wifi-lcd
 
-<img src="docs/mcp-based-graph.jpg" alt="Control everything via MCP" width="320">
+位于 `main/boards/bread-compact-wifi-lcd/`：
 
-## Recent Updates
+- **`config.h`**：引脚定义（屏幕、电机、BLE、电池 ADC）
+- **`nimbo_display.cc / .h`**：240×240 SPI LCD 驱动，移植 aora-bot nimbo 云宝表情
+- **`nimbo.c / .h`**：nimbo 表情数据（8 状态：idle / listening / thinking / speaking / action / happy / sleeping / resetIdle）
+- **`motor_controller.cc / .h`**：TB6612FNG 驱动，四轮差速
+- **`motor_logic.h`**：运动指令集（前进/后退/左转/右转/停止/速度档位）
 
-- The project now requires ESP-IDF v6.0.1 or later. [ESP-IDF v6.1](https://github.com/espressif/esp-idf/releases/tag/v6.1) is the recommended SDK. ESP-IDF 5.x is no longer supported. The current matrix contains 171 variants; ESP32-S31 builds require IDF 6.1 or later.
-- MQTT and BluFi cryptographic code has migrated to PSA Crypto. IDF 6 component splits and third-party dependency compatibility have also been addressed.
-- Audio pipeline concurrency, MQTT/UDP packet validation, and release-matrix selection have been hardened.
-- ESP32-P4 Rev1 and Rev3 are both supported on IDF 6 with ESP-SR 2.4.7.
+### BLE 音频通道
 
-### Features Implemented
+`main/audio/ble_audio_player.cc / .h`：接收 Android App 通过 BLE 推送的 16kHz PCM 音频流，直接送 I2S DAC 播放。用于：
+- 离线模式：手机端 VITS TTS 生成语音后通过 BLE 传给小车播放
+- 联网模式：仍走 xiaozhi-esp32 原生 WebSocket/MQTT 通道
 
-- Wi-Fi, wired Ethernet, USB RNDIS, and ML307/EC801E or NT26 Cat.1 4G networking; supported boards can switch between Wi-Fi and 4G
-- Offline voice wake-up with [ESP-SR](https://github.com/espressif/esp-sr), including customizable wake words
-- Two communication transports: [WebSocket](docs/websocket.md) and [MQTT + UDP](docs/mqtt-udp.md)
-- Opus audio streaming with conventional streaming ASR + LLM + TTS pipelines and Realtime end-to-end voice models; AEC-capable hardware supports realtime full-duplex interaction
-- Speaker recognition, identifies the current speaker [3D Speaker](https://github.com/modelscope/3D-Speaker)
-- OLED / LCD displays with emoji and rich expression support, plus camera vision input on supported boards
-- Battery display and power management
-- 39 interface languages, with localized voice prompts where available and English fallback
-- ESP32, ESP32-C3, ESP32-C5, ESP32-C6, ESP32-S3, and ESP32-P4 chip platforms
-- Wi-Fi provisioning through hotspot or BluFi
-- Device-side MCP for device control (Speaker, LED, Servo, GPIO, etc.)
-- Cloud-side MCP to extend large model capabilities (smart home control, PC desktop operation, knowledge search, email, etc.)
-- Customizable wake words, fonts, emojis, and chat backgrounds with online web-based editing ([Custom Assets Generator](https://github.com/78/xiaozhi-assets-generator))
+### 表情协议
 
-## Hardware
+Android App 通过 BLE/WiFi 发送表情指令（0x10 + 0~7），小车屏幕切换对应云宝表情：
 
-### Breadboard DIY Practice
+| 指令 | 表情 | 说明 |
+|---|---|---|
+| 0 | idle | 待机 |
+| 1 | listening | 聆听中 |
+| 2 | thinking | 思考中 |
+| 3 | speaking | 说话中（嘴巴开合） |
+| 4 | action | 动作中 |
+| 5 | happy | 开心 |
+| 6 | sleeping | 睡觉 |
+| 7 | resetIdle | 重置 idle 计时器 |
 
-See the Feishu document tutorial:
+## 硬件清单（目标）
 
-👉 ["XiaoZhi AI Chatbot Encyclopedia"](https://ccnphfhqs21z.feishu.cn/wiki/F5krwD16viZoF0kKkvDcrZNYnhb?from=from_copylink)
+- ESP32-S3-WROOM-1（N16R8）
+- 240×240 SPI LCD（ST7789）
+- TB6612FNG 电机驱动
+- 4× N20 减速电机 + 轮子
+- MAX98357A I2S 功放 + 喇叭
+- INMP441 麦克风
+- 3.7V 锂电池 + TP4056 Type-C 充电模块
+- MT3608 升压到 5V
+- 2× 面包板
 
-Breadboard demo:
+## 开发环境
 
-![Breadboard Demo](docs/v1/wiring2.jpg)
+- ESP-IDF v6.0.1+（推荐 v6.1）
+- VS Code + ESP-IDF 插件
+- 构建：`idf.py set-target esp32s3 && idf.py build flash monitor`
 
-### Supports 138 Board Directories and 171 Release Variants (Partial List)
+## 相关仓库
 
-- <a href="https://oshwhub.com/li-chuang-kai-fa-ban/li-chuang-shi-zhan-pai-esp32-s3-kai-fa-ban" target="_blank" title="LiChuang ESP32-S3 Development Board">LiChuang ESP32-S3 Development Board</a>
-- <a href="https://github.com/espressif/esp-box" target="_blank" title="Espressif ESP32-S3-BOX-3">Espressif ESP32-S3-BOX-3</a>
-- <a href="https://docs.m5stack.com/zh_CN/core/CoreS3" target="_blank" title="M5Stack CoreS3">M5Stack CoreS3</a>
-- <a href="https://docs.m5stack.com/en/atom/Atomic%20Echo%20Base" target="_blank" title="AtomS3R + Echo Base">M5Stack AtomS3R + Echo Base</a>
-- <a href="https://gf.bilibili.com/item/detail/1108782064" target="_blank" title="Magic Button 2.4">Magic Button 2.4</a>
-- <a href="https://www.waveshare.net/shop/ESP32-S3-Touch-AMOLED-1.8.htm" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">Waveshare ESP32-S3-Touch-AMOLED-1.8</a>
-- <a href="https://github.com/Xinyuan-LilyGO/T-Circle-S3" target="_blank" title="LILYGO T-Circle-S3">LILYGO T-Circle-S3</a>
-- <a href="https://oshwhub.com/tenclass01/xmini_c3" target="_blank" title="XiaGe Mini C3">XiaGe Mini C3</a>
-- <a href="https://oshwhub.com/movecall/cuican-ai-pendant-lights-up-y" target="_blank" title="Movecall CuiCan ESP32S3">CuiCan AI Pendant</a>
-- <a href="https://github.com/WMnologo/xingzhi-ai" target="_blank" title="WMnologo-Xingzhi-1.54">WMnologo-Xingzhi-1.54TFT</a>
-- <a href="https://www.seeedstudio.com/SenseCAP-Watcher-W1-A-p-5979.html" target="_blank" title="SenseCAP Watcher">SenseCAP Watcher</a>
-- <a href="https://www.bilibili.com/video/BV1BHJtz6E2S/" target="_blank" title="ESP-HI Low Cost Robot Dog">ESP-HI Low Cost Robot Dog</a>
+- **Android App**：[norfan/mijin-robot](https://github.com/norfan/mijin-robot)
+- **PC TCP 模拟器**：本仓库 `ble-simulator/` 目录下，无硬件时在 PC 上模拟小车屏幕和运动指令
+- **表情引擎来源**：[aora-bot](https://github.com/78/aora-bot)（mood-mates nimbo）
 
-<div style="display: flex; justify-content: space-between;">
-  <a href="docs/v1/lichuang-s3.jpg" target="_blank" title="LiChuang ESP32-S3 Development Board">
-    <img src="docs/v1/lichuang-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/espbox3.jpg" target="_blank" title="Espressif ESP32-S3-BOX3">
-    <img src="docs/v1/espbox3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/m5cores3.jpg" target="_blank" title="M5Stack CoreS3">
-    <img src="docs/v1/m5cores3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/atoms3r.jpg" target="_blank" title="AtomS3R + Echo Base">
-    <img src="docs/v1/atoms3r.jpg" width="240" />
-  </a>
-  <a href="docs/v1/magiclick.jpg" target="_blank" title="Magic Button 2.4">
-    <img src="docs/v1/magiclick.jpg" width="240" />
-  </a>
-  <a href="docs/v1/waveshare.jpg" target="_blank" title="Waveshare ESP32-S3-Touch-AMOLED-1.8">
-    <img src="docs/v1/waveshare.jpg" width="240" />
-  </a>
-  <a href="docs/v1/lilygo-t-circle-s3.jpg" target="_blank" title="LILYGO T-Circle-S3">
-    <img src="docs/v1/lilygo-t-circle-s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/xmini-c3.jpg" target="_blank" title="XiaGe Mini C3">
-    <img src="docs/v1/xmini-c3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/movecall-cuican-esp32s3.jpg" target="_blank" title="CuiCan">
-    <img src="docs/v1/movecall-cuican-esp32s3.jpg" width="240" />
-  </a>
-  <a href="docs/v1/wmnologo_xingzhi_1.54.jpg" target="_blank" title="WMnologo-Xingzhi-1.54">
-    <img src="docs/v1/wmnologo_xingzhi_1.54.jpg" width="240" />
-  </a>
-  <a href="docs/v1/sensecap_watcher.jpg" target="_blank" title="SenseCAP Watcher">
-    <img src="docs/v1/sensecap_watcher.jpg" width="240" />
-  </a>
-  <a href="docs/v1/esp-hi.jpg" target="_blank" title="ESP-HI Low Cost Robot Dog">
-    <img src="docs/v1/esp-hi.jpg" width="240" />
-  </a>
-</div>
+---
 
-## Software
+## 上游 xiaozhi-esp32 说明
 
-### Firmware Flashing
-
-For beginners, it is recommended to use the firmware that can be flashed without setting up a development environment.
-
-The firmware connects to the official [xiaozhi.me](https://xiaozhi.me) server by default. Personal users can register an account to use the Qwen real-time model for free.
-
-👉 [Beginner's Firmware Flashing Guide](https://ccnphfhqs21z.feishu.cn/wiki/Zpz4wXBtdimBrLk25WdcXzxcnNS)
-
-### Development Environment
-
-- Cursor or VSCode
-- Install the ESP-IDF plugin. The minimum SDK is [ESP-IDF v6.0.1](https://github.com/espressif/esp-idf/releases/tag/v6.0.1); [ESP-IDF v6.1](https://github.com/espressif/esp-idf/releases/tag/v6.1) is recommended. ESP-IDF 5.x is not supported.
-- Linux is better than Windows for faster compilation and fewer driver issues
-- This project uses Google C++ code style, please ensure compliance when submitting code
-
-### Developer Documentation
-
-- [Custom Board Guide](docs/custom-board.md) - Learn how to create custom boards for XiaoZhi AI
-- [MCP Protocol IoT Control Usage](docs/mcp-usage.md) - Learn how to control IoT devices via MCP protocol
-- [MCP Protocol Interaction Flow](docs/mcp-protocol.md) - Device-side MCP protocol implementation
-- [MQTT + UDP Hybrid Communication Protocol Document](docs/mqtt-udp.md)
-- [A detailed WebSocket communication protocol document](docs/websocket.md)
-
-## Large Model Configuration
-
-If you already have a XiaoZhi AI chatbot device and have connected to the official server, you can log in to the [xiaozhi.me](https://xiaozhi.me) console for configuration.
-
-👉 [Backend Operation Video Tutorial (Old Interface)](https://www.bilibili.com/video/BV1jUCUY2EKM/)
-
-## Related Open Source Projects
-
-For server deployment on personal computers, refer to the following open-source projects:
-
-- [xinnan-tech/xiaozhi-esp32-server](https://github.com/xinnan-tech/xiaozhi-esp32-server) Python server
-- [joey-zhou/xiaozhi-esp32-server-java](https://github.com/joey-zhou/xiaozhi-esp32-server-java) Java server
-- [AnimeAIChat/xiaozhi-server-go](https://github.com/AnimeAIChat/xiaozhi-server-go) Golang server
-- [hackers365/xiaozhi-esp32-server-golang](https://github.com/hackers365/xiaozhi-esp32-server-golang) Golang server
-
-Other client projects using the XiaoZhi communication protocol:
-
-- [huangjunsen0406/py-xiaozhi](https://github.com/huangjunsen0406/py-xiaozhi) Python client
-- [TOM88812/xiaozhi-android-client](https://github.com/TOM88812/xiaozhi-android-client) Android client
-- [100askTeam/xiaozhi-linux](http://github.com/100askTeam/xiaozhi-linux) Linux client by 100ask
-- [78/xiaozhi-sf32](https://github.com/78/xiaozhi-sf32) Bluetooth chip firmware by Sichuan
-- [QuecPython/solution-xiaozhiAI](https://github.com/QuecPython/solution-xiaozhiAI) QuecPython firmware by Quectel
-
-Custom Assets Tools:
-
-- [78/xiaozhi-assets-generator](https://github.com/78/xiaozhi-assets-generator) Custom Assets Generator (Wake words, fonts, emojis, backgrounds)
-
-## About the Project
-
-This is an open-source ESP32 project, released under the MIT license, allowing anyone to use it for free, including for commercial purposes.
-
-We hope this project helps everyone understand AI hardware development and apply rapidly evolving large language models to real hardware devices.
-
-If you have any ideas or suggestions, please feel free to raise Issues or join our [Discord](https://discord.gg/C759fGMBcZ) or QQ group: 1095994019
-
-## Star History
-
-<a href="https://star-history.com/#78/xiaozhi-esp32&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=78/xiaozhi-esp32&type=Date" />
- </picture>
-</a>
+本仓库 fork 自 [78/xiaozhi-esp32](https://github.com/78/xiaozhi-esp32)，保留其全部联网对话、WebSocket/MQTT、Opus 音频流、ESP-SR 离线唤醒等能力。上游 README 见 [README_upstream.md](README_upstream.md)。
